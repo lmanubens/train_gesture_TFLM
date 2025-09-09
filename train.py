@@ -2,6 +2,7 @@
 import os, glob, numpy as np, pandas as pd
 from sklearn.model_selection import train_test_split
 import tensorflow as tf
+from everywhereml.code_generators.tensorflow import tf_porter
 
 # ===== Paths =====
 CAPTURE_DIR = "captures"             # where your CSVs are saved
@@ -141,5 +142,18 @@ def write_header(tflite_bytes, header_path, varname="g_gesture_model_data"):
         cf.write(f"extern const unsigned int {varname}_len = {len(tflite_bytes)};\n")
     print("Wrote", header_path, "and", cc_path)
 
-write_header(tflite_model, OUT_HEADER)
+#write_header(tflite_model, OUT_HEADER)
+
+# Create a porter object from the Keras model
+porter = tf_porter(model, X_train[:100], y_train[:100])  # provide a small sample for calibration
+
+# Generate Arduino code
+arduino_code = porter.to_arduino(instance_name='tf')
+
+# Save to file
+with open("gesture_model_everywhereml.h", "w") as f:
+    f.write(arduino_code)
+
+print("Wrote gesture_model_everywhereml.h")
+
 print("Done.")
