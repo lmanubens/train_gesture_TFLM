@@ -7,12 +7,13 @@ import tensorflow as tf
 CAPTURE_DIR = "captures"             # where your CSVs are saved
 OUT_TFLITE  = "gesture_int8.tflite"  # quantized model
 OUT_HEADER  = "gesture_model.h"      # C header for Arduino
+N_CLASSES   = 2
 
 # ===== Hyper/Shapes =====
-NUM_SAMPLES = 100       # rows per window (matches your firmware)
-FEATS       = ["ax","ay","az","gx","gy","gz"]
-N_FEATS     = len(FEATS)
-HIDDEN_UNITS = 32       # tiny dense layer
+NUM_SAMPLES  = 100       # rows per window
+FEATS        = ["ax","ay","az","gx","gy","gz"]
+N_FEATS      = len(FEATS)
+HIDDEN_UNITS = 32
 
 # ----- Load CSVs and build windows -----
 def load_windows():
@@ -33,7 +34,7 @@ def load_windows():
             if len(grp) != NUM_SAMPLES:
                 continue
             X.append(grp[FEATS].to_numpy(dtype=np.float32))  # shape (100, 6)
-            y.append(int(label) - 1)  # map labels 1/2 -> 0/1
+            y.append(int(label) - 1)  # labels 1/2 → 0/1
 
     X = np.stack(X)                    # (N, 100, 6)
     y = np.array(y, dtype=np.int32)    # (N,)
@@ -43,6 +44,12 @@ print("Loading data...")
 X, y = load_windows()
 print("Dataset:", X.shape, y.shape, "classes:", np.unique(y))
 
+# ----- Normalization -----
+mean = X.mean(axis=(0,1), keepdims=True)
+std  = X.std(axis=(0,1), keepdims=True) + 1e-6
+
+X_train = (X - mean) / std
+
 # ----- Train/val split -----
 X_train, X_val, y_train, y_val = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
@@ -50,9 +57,17 @@ X_train, X_val, y_train, y_val = train_test_split(
 
 # ----- Build tiny model -----
 inp = tf.keras.Input(shape=(NUM_SAMPLES, N_FEATS), name="window")
-x = tf.keras.layers.Lambda(lambda x: tf.reshape(x, [-1, NUM_SAMPLES * N_FEATS]), name="reshape")(inp)
-x = tf.keras.layers.Dense(HIDDEN_UNITS, activation="relu")(x)
-out = tf.keras.layers.Dense(2)(x)
+# Keep original reshape flattening
+x = tf.keras.layers.Lambda(
+    lambda x: tf.reshape(x, [-1, NUM_SAMPLES * N_FEATS]),
+    name="reshape"
+)(inp)
+x = tf.keras.layers.Dense(
+    HIDDEN_UNITS,
+    activation="relu",
+    kernel_regularizer=tf.keras.regularizers.l2(1e-4)
+)(x)
+out = tf.keras.layers.Dense(N_CLASSES)(x)
 model = tf.keras.Model(inp, out)
 model.summary()
 
@@ -86,15 +101,19 @@ converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
 converter.inference_input_type  = tf.int8
 converter.inference_output_type = tf.int8
 
-converter._experimental_disable_per_channel = True  # not related to shape, but sometimes helps
-converter._experimental_skip_tensor_list_ops = True
-converter._experimental_lower_tensor_list_ops = True
-
 print("Converting to int8 TFLite...")
 tflite_model = converter.convert()
 with open(OUT_TFLITE, "wb") as f:
     f.write(tflite_model)
 print("Wrote", OUT_TFLITE, "size:", len(tflite_model), "bytes")
+
+# ===== Get quantization params =====
+interpreter = tf.lite.Interpreter(model_content=tflite_model)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()[0]
+scale, zero_point = input_details["quantization"]
+print("Input quantization scale:", scale)
+print("Input quantization zero_point:", zero_point)
 
 # ----- Export as C array (.h + .cc) -----
 def write_header(tflite_bytes, header_path, varname="g_gesture_model_data"):
@@ -120,4 +139,9 @@ def write_header(tflite_bytes, header_path, varname="g_gesture_model_data"):
     print("Wrote", header_path, "and", cc_path)
 
 write_header(tflite_model, OUT_HEADER)
+
+# ----- Save normalization params -----
+np.savez("normalization_params.npz", mean=mean, std=std)
+print("Normalization mean:", mean.flatten())
+print("Normalization std :", std.flatten())
 print("Done.")

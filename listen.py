@@ -6,12 +6,12 @@ from datetime import datetime
 # === User config ===
 PORT = "COM6"         # <-- change to your ESP32 port
 BAUD = 9600
-OUTDIR = "captures"   # directory for saved CSVs
+OUTDIR = "captures_" + datetime.now().strftime("%Y%m%d")    # directory for saved CSVs
 ECHO_DATA = True      # True = print every CSV line; False = only show progress
 
 def make_filename(label):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return os.path.join(OUTDIR, f"gesture_L{label}_{ts}.csv")
+    return os.path.join(OUTDIR, f"gesture_L{label}.csv")
 
 def wait_and_save(ser, label):
     """Listen for one CSV block and save to file"""
